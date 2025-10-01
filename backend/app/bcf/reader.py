@@ -304,20 +304,55 @@ def _read_bcf_from_zip(bcf_path: str) -> Tuple[ProjectMeta, List[TopicDict]]:
                 topic_data["guid"] = posixpath.basename(topic_dir)
 
             resolved_viewpoints = []
+            topic_snapshot_path = _resolve_zip_path(topic_dir, topic_data.get("snapshot"))
+            topic_snapshot_data: bytes | None = None
             for vp in topic_data.get("viewpoints", []):
                 resolved = dict(vp)
-                resolved["viewpoint"] = _resolve_zip_path(topic_dir, vp.get("viewpoint"))
-                resolved["snapshot"] = _resolve_zip_path(topic_dir, vp.get("snapshot"))
+                viewpoint_path = _resolve_zip_path(topic_dir, vp.get("viewpoint"))
+                snapshot_path = _resolve_zip_path(topic_dir, vp.get("snapshot"))
+
+                resolved["viewpoint"] = viewpoint_path
+                resolved["snapshot"] = snapshot_path
+
+                if viewpoint_path and viewpoint_path in names:
+                    try:
+                        resolved["viewpointData"] = archive.read(viewpoint_path)
+                    except KeyError:
+                        pass
+
+                if snapshot_path and snapshot_path in names:
+                    try:
+                        snapshot_bytes = archive.read(snapshot_path)
+                    except KeyError:
+                        snapshot_bytes = None
+                    else:
+                        resolved["snapshotData"] = snapshot_bytes
+                        if topic_snapshot_path is None:
+                            topic_snapshot_path = snapshot_path
+                        if topic_snapshot_data is None:
+                            topic_snapshot_data = snapshot_bytes
+
                 resolved_viewpoints.append(resolved)
             topic_data["viewpoints"] = resolved_viewpoints
 
-            if topic_data.get("snapshot"):
-                topic_data["snapshot"] = _resolve_zip_path(topic_dir, topic_data["snapshot"])
+            if topic_snapshot_path:
+                topic_data["snapshot"] = topic_snapshot_path
             else:
                 for vp in resolved_viewpoints:
                     if vp.get("snapshot"):
                         topic_data["snapshot"] = vp["snapshot"]
+                        topic_snapshot_path = vp.get("snapshot")
+                        topic_snapshot_data = vp.get("snapshotData")
                         break
+
+            if topic_snapshot_path and topic_snapshot_path in names and topic_snapshot_data is None:
+                try:
+                    topic_snapshot_data = archive.read(topic_snapshot_path)
+                except KeyError:
+                    topic_snapshot_data = None
+
+            if topic_snapshot_data is not None:
+                topic_data["snapshotData"] = topic_snapshot_data
 
             topics.append(topic_data)
 
@@ -390,22 +425,68 @@ def _read_bcf_from_dir(bcf_dir: str) -> Tuple[ProjectMeta, List[TopicDict]]:
             topic_data["guid"] = topic_name
 
         resolved_viewpoints = []
+        topic_snapshot_path = _resolve_dir_path(
+            bcf_dir, topic_path, topic_data.get("snapshot")
+        )
+        topic_snapshot_data: bytes | None = None
         for vp in topic_data.get("viewpoints", []):
             resolved = dict(vp)
-            resolved["viewpoint"] = _resolve_dir_path(bcf_dir, topic_path, vp.get("viewpoint"))
-            resolved["snapshot"] = _resolve_dir_path(bcf_dir, topic_path, vp.get("snapshot"))
+            viewpoint_path = _resolve_dir_path(bcf_dir, topic_path, vp.get("viewpoint"))
+            snapshot_path = _resolve_dir_path(bcf_dir, topic_path, vp.get("snapshot"))
+
+            resolved["viewpoint"] = viewpoint_path
+            resolved["snapshot"] = snapshot_path
+
+            if viewpoint_path:
+                abs_viewpoint = os.path.join(bcf_dir, viewpoint_path.replace("/", os.sep))
+                if os.path.isfile(abs_viewpoint):
+                    try:
+                        with open(abs_viewpoint, "rb") as fh:
+                            resolved["viewpointData"] = fh.read()
+                    except OSError:
+                        pass
+
+            if snapshot_path:
+                abs_snapshot = os.path.join(bcf_dir, snapshot_path.replace("/", os.sep))
+                if os.path.isfile(abs_snapshot):
+                    try:
+                        with open(abs_snapshot, "rb") as fh:
+                            snapshot_bytes = fh.read()
+                    except OSError:
+                        snapshot_bytes = None
+                    else:
+                        resolved["snapshotData"] = snapshot_bytes
+                        if topic_snapshot_path is None:
+                            topic_snapshot_path = snapshot_path
+                        if topic_snapshot_data is None:
+                            topic_snapshot_data = snapshot_bytes
+
             resolved_viewpoints.append(resolved)
         topic_data["viewpoints"] = resolved_viewpoints
 
-        if topic_data.get("snapshot"):
-            topic_data["snapshot"] = _resolve_dir_path(
-                bcf_dir, topic_path, topic_data["snapshot"]
-            )
+        if topic_snapshot_path:
+            topic_data["snapshot"] = topic_snapshot_path
         else:
             for vp in resolved_viewpoints:
                 if vp.get("snapshot"):
                     topic_data["snapshot"] = vp["snapshot"]
+                    topic_snapshot_path = vp.get("snapshot")
+                    topic_snapshot_data = vp.get("snapshotData")
                     break
+
+        if topic_snapshot_path and topic_snapshot_data is None:
+            abs_snapshot = os.path.join(
+                bcf_dir, topic_snapshot_path.replace("/", os.sep)
+            )
+            if os.path.isfile(abs_snapshot):
+                try:
+                    with open(abs_snapshot, "rb") as fh:
+                        topic_snapshot_data = fh.read()
+                except OSError:
+                    topic_snapshot_data = None
+
+        if topic_snapshot_data is not None:
+            topic_data["snapshotData"] = topic_snapshot_data
 
         topics.append(topic_data)
 

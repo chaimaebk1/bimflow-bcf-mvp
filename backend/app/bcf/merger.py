@@ -4,6 +4,7 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
+import tempfile
 from typing import Dict, List, Optional, Set, Tuple
 
 from . import reader
@@ -139,7 +140,7 @@ def _merge_topic(base: _AggregatedTopic, incoming: TopicDict) -> None:
                 base.snapshot_timestamp = incoming_timestamp or base.snapshot_timestamp
 
 
-def merge_bcfs(paths: List[str], out_path: str) -> None:
+def merge_bcfs(paths: List[str], out_path: Optional[str] = None) -> str:
     """Merge multiple BCF archives into a single archive.
 
     Parameters
@@ -147,7 +148,8 @@ def merge_bcfs(paths: List[str], out_path: str) -> None:
     paths:
         Paths to the source BCF archives that should be merged.
     out_path:
-        Destination path for the resulting merged BCF archive.
+        Destination path for the resulting merged BCF archive. When omitted,
+        a temporary ``.bcfzip`` file is created and its path is returned.
     """
 
     if not paths:
@@ -183,4 +185,12 @@ def merge_bcfs(paths: List[str], out_path: str) -> None:
 
     merged_topics: List[TopicDict] = [aggregated_topics[guid].data for guid in topic_order]
 
-    writer.write_bcf(out_path, merged_meta, merged_topics)
+    output_path = out_path
+    if output_path is None:
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".bcfzip")
+        tmp.close()
+        output_path = tmp.name
+
+    writer.write_bcf(output_path, merged_meta, merged_topics)
+
+    return output_path
