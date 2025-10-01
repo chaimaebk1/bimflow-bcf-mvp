@@ -7,9 +7,8 @@ import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { apiClient } from '@/lib/api';
 import { toast } from 'sonner';
-import { 
-  ArrowLeft, 
-  Download, 
+import {
+  ArrowLeft,
   Loader2,
   Merge,
   FileCheck
@@ -52,19 +51,17 @@ export default function Issues() {
     setIsMerging(true);
     
     try {
-      // Use mock merge for demo (switch to real API when backend is ready)
-      const blob = await apiClient.mergeBCFsWithMock(files);
-      
-      // Create download link
+      const { blob, filename } = await apiClient.mergeBcfs(files);
+
       const url = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = `merged-${Date.now()}.bcfzip`;
+      link.download = filename || `merged-${Date.now()}.bcfzip`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
       window.URL.revokeObjectURL(url);
-      
+
       toast.success('BCF files merged successfully', {
         description: 'Download started automatically',
       });

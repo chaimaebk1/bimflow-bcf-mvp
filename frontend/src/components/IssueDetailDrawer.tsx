@@ -132,24 +132,14 @@ export const IssueDetailDrawer = ({ issue, open, onOpenChange }: IssueDetailDraw
                 Viewpoints ({issue.viewpoints.length})
               </h3>
               <div className="space-y-2">
-                {issue.viewpoints.map((viewpoint) => (
-                  <div 
-                    key={viewpoint.guid}
+                {issue.viewpoints.map((viewpoint, index) => (
+                  <div
+                    key={`${issue.guid}-viewpoint-${index}`}
                     className="p-3 border rounded-lg bg-card hover:bg-muted/50 transition-colors"
                   >
-                    <div className="text-sm font-medium">
-                      {viewpoint.title || 'Untitled Viewpoint'}
+                    <div className="text-sm font-medium break-words">
+                      {viewpoint || 'Viewpoint'}
                     </div>
-                    <div className="text-xs text-muted-foreground mt-1">
-                      {viewpoint.guid}
-                    </div>
-                    {viewpoint.snapshotUrl && (
-                      <img 
-                        src={viewpoint.snapshotUrl} 
-                        alt={viewpoint.title || 'Viewpoint'} 
-                        className="mt-2 w-full rounded border"
-                      />
-                    )}
                   </div>
                 ))}
               </div>
@@ -165,9 +155,13 @@ export const IssueDetailDrawer = ({ issue, open, onOpenChange }: IssueDetailDraw
               Comments ({issue.comments.length})
             </h3>
             <div className="space-y-3">
-              {issue.comments.map((comment) => (
-                <div 
-                  key={comment.guid}
+              {issue.comments.map((comment, index) => {
+                const formattedDate = comment.date
+                  ? new Date(comment.date).toLocaleDateString()
+                  : '—';
+                return (
+                <div
+                  key={comment.guid ?? `${issue.guid}-comment-${index}`}
                   className="p-4 border rounded-lg bg-card space-y-2"
                 >
                   <div className="flex items-center justify-between">
@@ -177,12 +171,15 @@ export const IssueDetailDrawer = ({ issue, open, onOpenChange }: IssueDetailDraw
                     </div>
                     <div className="flex items-center gap-1 text-xs text-muted-foreground">
                       <Calendar className="w-3 h-3" />
-                      {new Date(comment.date).toLocaleDateString()}
+                      {formattedDate}
                     </div>
                   </div>
-                  <p className="text-sm text-muted-foreground">{comment.comment}</p>
+                  <p className="text-sm text-muted-foreground whitespace-pre-wrap">
+                    {comment.text || 'No comment text provided.'}
+                  </p>
                 </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         </div>
