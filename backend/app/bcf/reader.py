@@ -1,6 +1,7 @@
 """Utilities for reading BCF archives."""
 from __future__ import annotations
 
+import os
 import posixpath
 import zipfile
 from typing import Dict, List, Tuple
@@ -243,8 +244,28 @@ def _resolve_zip_path(base: str, relative: str | None) -> str | None:
     return posixpath.normpath(posixpath.join(base, relative))
 
 
-def read_bcf(bcf_path: str) -> Tuple[ProjectMeta, List[TopicDict]]:
-    """Read a BCF 2.1/3.0 archive and extract metadata and topics."""
+def _resolve_dir_path(root_dir: str, topic_dir: str, relative: str | None) -> str | None:
+    """Resolve a relative file reference within a directory based BCF archive."""
+    if not relative:
+        return None
+    relative = relative.strip()
+    if not relative:
+        return None
+
+    # Handle absolute-like references by interpreting them relative to the archive root
+    if relative.startswith(("/", "\\")):
+        candidate = os.path.join(root_dir, relative.lstrip("/\\"))
+    else:
+        candidate = os.path.join(topic_dir, relative)
+
+    candidate = os.path.normpath(candidate)
+    rel_to_root = os.path.relpath(candidate, root_dir)
+    rel_posix = posixpath.normpath(rel_to_root.replace(os.sep, "/"))
+    return rel_posix
+
+
+def _read_bcf_from_zip(bcf_path: str) -> Tuple[ProjectMeta, List[TopicDict]]:
+    """Read a BCF archive stored as a ZIP file."""
     project_meta: ProjectMeta = {}
     topics: List[TopicDict] = []
 
@@ -301,3 +322,104 @@ def read_bcf(bcf_path: str) -> Tuple[ProjectMeta, List[TopicDict]]:
             topics.append(topic_data)
 
     return project_meta, topics
+
+
+def _read_bcf_from_dir(bcf_dir: str) -> Tuple[ProjectMeta, List[TopicDict]]:
+    """Read a BCF archive stored as an extracted directory."""
+    project_meta: ProjectMeta = {}
+    topics: List[TopicDict] = []
+
+    try:
+        entries = os.listdir(bcf_dir)
+    except FileNotFoundError:
+        return project_meta, topics
+
+    # Read project level metadata files if they exist
+    for entry in entries:
+        entry_path = os.path.join(bcf_dir, entry)
+        lower_entry = entry.lower()
+        if os.path.isfile(entry_path):
+            if lower_entry.endswith("bcf.version"):
+                try:
+                    with open(entry_path, "rb") as fh:
+                        version = _parse_version(fh.read())
+                except OSError:
+                    version = None
+                if version:
+                    project_meta["bcfVersion"] = version
+            elif lower_entry.endswith("project.bcfp"):
+                try:
+                    with open(entry_path, "rb") as fh:
+                        project_name = _parse_project_name(fh.read())
+                except OSError:
+                    project_name = None
+                if project_name:
+                    project_meta["projectName"] = project_name
+
+    topic_dirs = [
+        entry
+        for entry in entries
+        if os.path.isdir(os.path.join(bcf_dir, entry))
+    ]
+
+    for topic_name in sorted(topic_dirs):
+        topic_path = os.path.join(bcf_dir, topic_name)
+        try:
+            topic_entries = os.listdir(topic_path)
+        except OSError:
+            continue
+
+        topic_file_path = None
+        for entry in sorted(topic_entries):
+            if entry.lower().endswith("markup.bcf") or entry.lower().endswith("topic.bcf"):
+                topic_file_path = os.path.join(topic_path, entry)
+                break
+
+        if not topic_file_path:
+            continue
+
+        try:
+            with open(topic_file_path, "rb") as fh:
+                topic_bytes = fh.read()
+        except OSError:
+            continue
+
+        topic_data = _parse_topic(topic_bytes)
+
+        if not topic_data.get("guid"):
+            topic_data["guid"] = topic_name
+
+        resolved_viewpoints = []
+        for vp in topic_data.get("viewpoints", []):
+            resolved = dict(vp)
+            resolved["viewpoint"] = _resolve_dir_path(bcf_dir, topic_path, vp.get("viewpoint"))
+            resolved["snapshot"] = _resolve_dir_path(bcf_dir, topic_path, vp.get("snapshot"))
+            resolved_viewpoints.append(resolved)
+        topic_data["viewpoints"] = resolved_viewpoints
+
+        if topic_data.get("snapshot"):
+            topic_data["snapshot"] = _resolve_dir_path(
+                bcf_dir, topic_path, topic_data["snapshot"]
+            )
+        else:
+            for vp in resolved_viewpoints:
+                if vp.get("snapshot"):
+                    topic_data["snapshot"] = vp["snapshot"]
+                    break
+
+        topics.append(topic_data)
+
+    return project_meta, topics
+
+
+def read_bcf(bcf_path: str) -> Tuple[ProjectMeta, List[TopicDict]]:
+    """Read a BCF 2.1/3.0 archive and extract metadata and topics."""
+
+    if zipfile.is_zipfile(bcf_path):
+        return _read_bcf_from_zip(bcf_path)
+
+    if os.path.isdir(bcf_path) or bcf_path.lower().endswith(".bcf"):
+        return _read_bcf_from_dir(bcf_path)
+
+    # Not a valid BCF archive path; return empty structures for resilience.
+    return {}, []
