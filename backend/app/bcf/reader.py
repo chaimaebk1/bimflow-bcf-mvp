@@ -69,17 +69,24 @@ def _parse_project_name(xml_bytes: bytes) -> str | None:
 
 
 def _parse_comment(comment_elem: ET.Element) -> Dict[str, str | None]:
+    author = comment_elem.get("Author")
+    author = author or comment_elem.get("CreationAuthor")
+    author = author or _get_direct_text(comment_elem, "Author")
+    author = author or _get_direct_text(comment_elem, "CreationAuthor")
+
+    date = comment_elem.get("Date") or comment_elem.get("CreationDate")
+    date = date or _get_direct_text(comment_elem, "Date")
+    date = date or _get_direct_text(comment_elem, "CreationDate")
+
+    text = _get_direct_text(comment_elem, "Comment")
+
     return {
         "guid": comment_elem.get("Guid") or _get_direct_text(comment_elem, "Guid"),
-        "author": comment_elem.get("Author")
-        or comment_elem.get("CreationAuthor")
-        or _get_direct_text(comment_elem, "Author")
-        or _get_direct_text(comment_elem, "CreationAuthor"),
-        "createdAt": comment_elem.get("Date")
-        or comment_elem.get("CreationDate")
-        or _get_direct_text(comment_elem, "Date")
-        or _get_direct_text(comment_elem, "CreationDate"),
-        "comment": _get_direct_text(comment_elem, "Comment"),
+        "author": author,
+        "createdAt": date,
+        "date": date,
+        "comment": text,
+        "text": text,
         "viewpointGuid": comment_elem.get("ViewpointGuid")
         or _get_direct_text(comment_elem, "ViewpointGuid"),
     }
@@ -126,6 +133,16 @@ def _parse_viewpoints(root: ET.Element) -> List[Dict[str, str | None]]:
             }
         )
     return viewpoints
+
+
+def _stringify_viewpoint(viewpoint: Dict[str, object]) -> str | None:
+    """Return a human readable representation of a viewpoint for API responses."""
+
+    for key in ("viewpoint", "snapshot", "guid", "index"):
+        value = viewpoint.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
 
 
 def _parse_topic(xml_bytes: bytes) -> TopicDict:
@@ -221,7 +238,15 @@ def _parse_topic(xml_bytes: bytes) -> TopicDict:
     topic_dict["comments"] = [_parse_comment(elem) for elem in comment_elements]
 
     viewpoints = _parse_viewpoints(root if topic_elem is None else root)
-    topic_dict["viewpoints"] = viewpoints
+    topic_dict["_viewpointDetails"] = viewpoints
+    topic_dict["viewpoints"] = [
+        value
+        for value in (
+            _stringify_viewpoint(vp) if isinstance(vp, dict) else str(vp)
+            for vp in viewpoints
+        )
+        if isinstance(value, str) and value
+    ]
 
     for vp in viewpoints:
         if vp.get("snapshot"):
@@ -306,7 +331,8 @@ def _read_bcf_from_zip(bcf_path: str) -> Tuple[ProjectMeta, List[TopicDict]]:
             resolved_viewpoints = []
             topic_snapshot_path = _resolve_zip_path(topic_dir, topic_data.get("snapshot"))
             topic_snapshot_data: bytes | None = None
-            for vp in topic_data.get("viewpoints", []):
+
+            for vp in topic_data.get("_viewpointDetails", []):
                 resolved = dict(vp)
                 viewpoint_path = _resolve_zip_path(topic_dir, vp.get("viewpoint"))
                 snapshot_path = _resolve_zip_path(topic_dir, vp.get("snapshot"))
@@ -333,7 +359,16 @@ def _read_bcf_from_zip(bcf_path: str) -> Tuple[ProjectMeta, List[TopicDict]]:
                             topic_snapshot_data = snapshot_bytes
 
                 resolved_viewpoints.append(resolved)
-            topic_data["viewpoints"] = resolved_viewpoints
+
+            topic_data["_viewpointDetails"] = resolved_viewpoints
+            topic_data["viewpoints"] = [
+                value
+                for value in (
+                    _stringify_viewpoint(vp) if isinstance(vp, dict) else str(vp)
+                    for vp in resolved_viewpoints
+                )
+                if isinstance(value, str) and value
+            ]
 
             if topic_snapshot_path:
                 topic_data["snapshot"] = topic_snapshot_path
@@ -429,7 +464,7 @@ def _read_bcf_from_dir(bcf_dir: str) -> Tuple[ProjectMeta, List[TopicDict]]:
             bcf_dir, topic_path, topic_data.get("snapshot")
         )
         topic_snapshot_data: bytes | None = None
-        for vp in topic_data.get("viewpoints", []):
+        for vp in topic_data.get("_viewpointDetails", []):
             resolved = dict(vp)
             viewpoint_path = _resolve_dir_path(bcf_dir, topic_path, vp.get("viewpoint"))
             snapshot_path = _resolve_dir_path(bcf_dir, topic_path, vp.get("snapshot"))
@@ -462,7 +497,15 @@ def _read_bcf_from_dir(bcf_dir: str) -> Tuple[ProjectMeta, List[TopicDict]]:
                             topic_snapshot_data = snapshot_bytes
 
             resolved_viewpoints.append(resolved)
-        topic_data["viewpoints"] = resolved_viewpoints
+        topic_data["_viewpointDetails"] = resolved_viewpoints
+        topic_data["viewpoints"] = [
+            value
+            for value in (
+                _stringify_viewpoint(vp) if isinstance(vp, dict) else str(vp)
+                for vp in resolved_viewpoints
+            )
+            if isinstance(value, str) and value
+        ]
 
         if topic_snapshot_path:
             topic_data["snapshot"] = topic_snapshot_path
@@ -497,10 +540,15 @@ def read_bcf(bcf_path: str) -> Tuple[ProjectMeta, List[TopicDict]]:
     """Read a BCF 2.1/3.0 archive and extract metadata and topics."""
 
     if zipfile.is_zipfile(bcf_path):
-        return _read_bcf_from_zip(bcf_path)
+        project_meta, topics = _read_bcf_from_zip(bcf_path)
+        if not project_meta and not topics:
+            raise ValueError("Le fichier fourni n'est pas une archive BCF valide.")
+        return project_meta, topics
 
     if os.path.isdir(bcf_path) or bcf_path.lower().endswith(".bcf"):
-        return _read_bcf_from_dir(bcf_path)
+        project_meta, topics = _read_bcf_from_dir(bcf_path)
+        if not project_meta and not topics:
+            raise ValueError("Le fichier fourni n'est pas une archive BCF valide.")
+        return project_meta, topics
 
-    # Not a valid BCF archive path; return empty structures for resilience.
-    return {}, []
+    raise ValueError("Format de fichier non pris en charge pour les archives BCF.")

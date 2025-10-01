@@ -1,17 +1,13 @@
 import { create } from 'zustand';
 
 export interface BCFComment {
-  guid: string;
-  comment: string;
+  guid?: string;
   author: string;
   date: string;
+  text: string;
 }
 
-export interface BCFViewpoint {
-  guid: string;
-  title?: string;
-  snapshotUrl?: string;
-}
+export type BCFViewpoint = string;
 
 export interface BCFIssue {
   guid: string;

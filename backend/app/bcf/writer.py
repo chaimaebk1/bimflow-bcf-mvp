@@ -101,7 +101,7 @@ def _build_comments(parent: ET.Element, comments: Iterable[Dict[str, object]]) -
         if guid:
             elem.set("Guid", guid)
 
-        created_at = _coerce_str(comment.get("createdAt"))
+        created_at = _coerce_str(comment.get("date") or comment.get("createdAt"))
         if created_at:
             date = ET.SubElement(elem, "Date")
             date.text = created_at
@@ -111,7 +111,7 @@ def _build_comments(parent: ET.Element, comments: Iterable[Dict[str, object]]) -
             author_elem = ET.SubElement(elem, "Author")
             author_elem.text = author
 
-        comment_text = _coerce_str(comment.get("comment"))
+        comment_text = _coerce_str(comment.get("text") or comment.get("comment"))
         if comment_text:
             text_elem = ET.SubElement(elem, "Comment")
             text_elem.text = comment_text
@@ -199,7 +199,11 @@ def write_bcf(out_path: str, project_meta: dict, topics: List[dict]) -> None:
 
             _build_comments(markup_root, topic.get("comments", []))
 
-            viewpoints_input = [vp for vp in topic.get("viewpoints", []) if isinstance(vp, dict)]
+            viewpoints_input = [
+                vp
+                for vp in topic.get("_viewpointDetails", [])
+                if isinstance(vp, dict)
+            ]
 
             topic_snapshot_bytes = _pick_first_bytes(
                 topic,

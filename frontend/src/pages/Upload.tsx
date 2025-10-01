@@ -42,13 +42,39 @@ export default function Upload() {
     setIsInspecting(true);
 
     try {
-      // Use mock data for demo (switch to real API call when backend is ready)
-      const response = await apiClient.inspectBCFWithMock(file);
-      
-      setFileIssues(file.name, response.issues);
-      
+      const response = await apiClient.inspectBcf(file);
+
+      const issues = response.topics.map((topic, index) => {
+        const comments = (topic.comments ?? []).map((comment, commentIndex) => ({
+          guid: comment.guid ?? `${topic.guid || file.name}-comment-${commentIndex}`,
+          author: comment.author || 'Unknown',
+          date: comment.date || '',
+          text: comment.text || '',
+        }));
+
+        const viewpoints = Array.isArray(topic.viewpoints)
+          ? topic.viewpoints.filter((viewpoint): viewpoint is string => typeof viewpoint === 'string' && viewpoint.trim().length > 0)
+          : [];
+
+        return {
+          guid: topic.guid || `${file.name}-topic-${index}`,
+          title: topic.title || 'Untitled issue',
+          status: topic.status || 'Unknown',
+          priority: topic.priority || 'Unspecified',
+          author: topic.author || 'Unknown',
+          createdAt: topic.createdAt || new Date().toISOString(),
+          description: undefined,
+          comments,
+          viewpoints,
+          snapshotUrl: topic.snapshot ?? undefined,
+          fileName: file.name,
+        };
+      });
+
+      setFileIssues(file.name, issues);
+
       toast.success(`Inspected ${file.name}`, {
-        description: `Found ${response.issues.length} issue${response.issues.length !== 1 ? 's' : ''}`,
+        description: `Found ${issues.length} issue${issues.length !== 1 ? 's' : ''}`,
       });
     } catch (error) {
       console.error('Failed to inspect BCF:', error);

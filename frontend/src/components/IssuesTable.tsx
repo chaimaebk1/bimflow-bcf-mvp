@@ -164,8 +164,14 @@ export const IssuesTable = ({ issues, onIssueClick }: IssuesTableProps) => {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {filteredIssues.map((issue) => (
-              <TableRow 
+            {filteredIssues.map((issue) => {
+              const createdDate = issue.createdAt ? new Date(issue.createdAt) : null;
+              const createdLabel = createdDate && !Number.isNaN(createdDate.getTime())
+                ? createdDate.toLocaleDateString()
+                : '—';
+
+              return (
+                <TableRow
                 key={issue.guid}
                 className="cursor-pointer hover:bg-muted/50"
                 onClick={() => onIssueClick(issue)}
@@ -198,7 +204,7 @@ export const IssuesTable = ({ issues, onIssueClick }: IssuesTableProps) => {
                 <TableCell>
                   <div className="flex items-center gap-2 text-sm text-muted-foreground">
                     <Calendar className="w-4 h-4" />
-                    {new Date(issue.createdAt).toLocaleDateString()}
+                    {createdLabel}
                   </div>
                 </TableCell>
                 <TableCell className="text-right">
@@ -214,8 +220,9 @@ export const IssuesTable = ({ issues, onIssueClick }: IssuesTableProps) => {
                     View
                   </Button>
                 </TableCell>
-              </TableRow>
-            ))}
+                </TableRow>
+              );
+            })}
           </TableBody>
         </Table>
       </div>

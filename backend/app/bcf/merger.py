@@ -26,8 +26,10 @@ def _is_empty(value: object) -> bool:
 def _comment_key(comment: Dict[str, object]) -> Tuple[str, str, str]:
     """Return a tuple used to de-duplicate comments."""
     author = str(comment.get("author") or "").strip()
-    created_at = str(comment.get("createdAt") or "").strip()
-    text = str(comment.get("comment") or "").strip()
+    created_at = str(
+        comment.get("date") or comment.get("createdAt") or ""
+    ).strip()
+    text = str(comment.get("text") or comment.get("comment") or "").strip()
     return author, created_at, text
 
 
@@ -83,14 +85,33 @@ def _as_dict_list(values: object) -> List[Dict[str, object]]:
     return [deepcopy(item) for item in values if isinstance(item, dict)]
 
 
+def _viewpoint_dicts(topic: TopicDict) -> List[Dict[str, object]]:
+    details = topic.get("_viewpointDetails")
+    if isinstance(details, list):
+        return [deepcopy(item) for item in details if isinstance(item, dict)]
+    return _as_dict_list(topic.get("viewpoints"))
+
+
+def _stringify_viewpoints(viewpoints: List[Dict[str, object]]) -> List[str]:
+    result: List[str] = []
+    for viewpoint in viewpoints:
+        for key in ("viewpoint", "snapshot", "guid", "index"):
+            value = viewpoint.get(key)
+            if isinstance(value, str) and value.strip():
+                result.append(value.strip())
+                break
+    return result
+
+
 def _initialise_topic(topic: TopicDict) -> _AggregatedTopic:
     topic_copy: TopicDict = deepcopy(topic)
 
     comments = _as_dict_list(topic_copy.get("comments"))
     topic_copy["comments"] = comments
 
-    viewpoints = _as_dict_list(topic_copy.get("viewpoints"))
-    topic_copy["viewpoints"] = viewpoints
+    viewpoints = _viewpoint_dicts(topic_copy)
+    topic_copy["_viewpointDetails"] = viewpoints
+    topic_copy["viewpoints"] = _stringify_viewpoints(viewpoints)
 
     return _AggregatedTopic(
         data=topic_copy,
@@ -118,12 +139,15 @@ def _merge_topic(base: _AggregatedTopic, incoming: TopicDict) -> None:
         base.data.setdefault("comments", []).append(comment)
 
     # Merge viewpoints. Keep all distinct combinations.
-    for viewpoint in _as_dict_list(incoming.get("viewpoints")):
+    for viewpoint in _viewpoint_dicts(incoming):
         key = _viewpoint_key(viewpoint)
         if key in base.viewpoint_keys:
             continue
         base.viewpoint_keys.add(key)
-        base.data.setdefault("viewpoints", []).append(viewpoint)
+        base.data.setdefault("_viewpointDetails", []).append(deepcopy(viewpoint))
+        base.data["viewpoints"] = _stringify_viewpoints(
+            _viewpoint_dicts(base.data)
+        )
 
     # Update snapshot with the most recent topic creation date.
     incoming_timestamp = _parse_datetime(str(incoming.get("createdAt") or ""))
