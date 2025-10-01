@@ -2,17 +2,21 @@
 from __future__ import annotations
 
 import base64
+import logging
 import os
 import tempfile
+import zipfile
 from typing import Any, Dict
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from starlette.background import BackgroundTask
 
 from app.bcf import merger, reader
 
 router = APIRouter(prefix="/bcf", tags=["bcf"])
+
+logger = logging.getLogger(__name__)
 
 
 async def _save_upload_to_temp(upload: UploadFile) -> str:
@@ -30,6 +34,17 @@ def _cleanup_file(path: str) -> None:
             os.remove(path)
         except OSError:
             pass
+
+
+def _detect_bcf_type(upload: UploadFile, temp_path: str) -> str:
+    filename = (upload.filename or "").lower()
+    if zipfile.is_zipfile(temp_path):
+        return ".bcfzip"
+    if filename.endswith(".bcf"):
+        return ".bcf"
+    if filename.endswith(".bcfzip"):
+        return ".bcfzip"
+    return "unknown"
 
 
 def _serialise_snapshot(topic: Dict[str, Any]) -> str | None:
@@ -95,6 +110,7 @@ def _normalise_topics(raw_topics: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
 
 @router.post("/inspect")
 async def inspect_bcf(file: UploadFile = File(...)) -> dict:
+    logger.info("Received request: POST /bcf/inspect")
     if file is None:
         raise HTTPException(status_code=400, detail="Aucun fichier fourni.")
 
@@ -103,6 +119,11 @@ async def inspect_bcf(file: UploadFile = File(...)) -> dict:
     response_topics: list[Dict[str, Any]] = []
     try:
         temp_path = await _save_upload_to_temp(file)
+        logger.info(
+            "Uploaded file '%s' stored at '%s'", file.filename, temp_path
+        )
+        detected_type = _detect_bcf_type(file, temp_path)
+        logger.info("Detected BCF type for '%s': %s", file.filename, detected_type)
         project_meta, topics = reader.read_bcf(temp_path)
         response_topics = _normalise_topics(topics)
         if not response_topics:
@@ -110,8 +131,11 @@ async def inspect_bcf(file: UploadFile = File(...)) -> dict:
                 status_code=400,
                 detail="Aucune donnée d'issue n'a pu être extraite du fichier fourni.",
             )
+    except HTTPException:
+        raise
     except Exception as exc:  # pragma: no cover - defensive programming
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        logger.exception("Failed to parse BCF file '%s'", file.filename)
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
     finally:
         _cleanup_file(temp_path)
         await file.close()
@@ -121,6 +145,7 @@ async def inspect_bcf(file: UploadFile = File(...)) -> dict:
 
 @router.post("/merge")
 async def merge_bcfs(files: list[UploadFile] = File(...)) -> FileResponse:
+    logger.info("Received request: POST /bcf/merge")
     if not files:
         raise HTTPException(status_code=400, detail="Aucun fichier fourni.")
 
@@ -129,12 +154,21 @@ async def merge_bcfs(files: list[UploadFile] = File(...)) -> FileResponse:
     try:
         for upload in files:
             temp_paths.append(await _save_upload_to_temp(upload))
+            temp_path = temp_paths[-1]
+            logger.info(
+                "Uploaded file '%s' stored at '%s'", upload.filename, temp_path
+            )
+            detected_type = _detect_bcf_type(upload, temp_path)
+            logger.info(
+                "Detected BCF type for '%s': %s", upload.filename, detected_type
+            )
 
         merged_path = merger.merge_bcfs(temp_paths)
     except HTTPException:
         raise
     except Exception as exc:  # pragma: no cover - defensive programming
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        logger.exception("Failed to merge BCF files")
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
     finally:
         for upload in files:
             await upload.close()
