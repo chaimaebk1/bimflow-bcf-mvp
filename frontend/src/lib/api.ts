@@ -30,12 +30,20 @@ export async function inspectBcf(file: File) {
   const formData = new FormData();
   formData.append('file', file);
 
-  const response = await ensureSuccess(
-    await fetch(buildUrl('/bcf/inspect'), {
+  console.log('Uploading file to /bcf/inspect:', file?.name ?? file);
+
+  let fetchResponse: Response;
+  try {
+    fetchResponse = await fetch(buildUrl('/bcf/inspect'), {
       method: 'POST',
       body: formData,
-    })
-  );
+    });
+  } catch (error) {
+    console.error('Fetch failed for /bcf/inspect', error);
+    throw error;
+  }
+
+  const response = await ensureSuccess(fetchResponse);
 
   return response.json() as Promise<{
     project: Record<string, unknown>;
@@ -57,12 +65,20 @@ export async function mergeBcfs(files: File[]) {
   const formData = new FormData();
   files.forEach((file) => formData.append('files', file));
 
-  const response = await ensureSuccess(
-    await fetch(buildUrl('/bcf/merge'), {
+  console.log('Uploading files to /bcf/merge:', files.map((file) => file?.name ?? file));
+
+  let fetchResponse: Response;
+  try {
+    fetchResponse = await fetch(buildUrl('/bcf/merge'), {
       method: 'POST',
       body: formData,
-    })
-  );
+    });
+  } catch (error) {
+    console.error('Fetch failed for /bcf/merge', error);
+    throw error;
+  }
+
+  const response = await ensureSuccess(fetchResponse);
 
   const disposition = response.headers.get('Content-Disposition') ?? '';
   let filename = 'merged.bcfzip';
