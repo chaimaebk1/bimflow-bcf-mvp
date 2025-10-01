@@ -1,68 +1,186 @@
-"""Utilities for merging multiple BCF archives."""
+"""Tools for merging multiple BCF archives into a single file."""
 from __future__ import annotations
 
-import tempfile
-import zipfile
-from typing import Iterable
+from copy import deepcopy
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Dict, List, Optional, Set, Tuple
+
+from . import reader
 
 
-def _increment_component(name: str, counter: int) -> str:
-    if "." in name:
-        stem, ext = name.rsplit(".", 1)
-        return f"{stem}_{counter}.{ext}"
-    return f"{name}_{counter}"
+TopicDict = Dict[str, object]
+ProjectMeta = Dict[str, str]
 
 
-def _increment_path(path: str, counter: int) -> str:
-    if path.endswith("/"):
-        base = path.rstrip("/")
-        incremented = _increment_path(base, counter)
-        return f"{incremented}/"
-    if "/" in path:
-        parent, name = path.rsplit("/", 1)
-        return f"{parent}/{_increment_component(name, counter)}"
-    return _increment_component(path, counter)
+def _is_empty(value: object) -> bool:
+    """Return ``True`` if ``value`` should be considered empty."""
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return value.strip() == ""
+    return False
 
 
-def merge_bcfs(bcf_paths: Iterable[str]) -> str:
-    """Merge multiple BCF archives into a single temporary archive."""
-    paths: list[str] = [path for path in bcf_paths if path]
+def _comment_key(comment: Dict[str, object]) -> Tuple[str, str, str]:
+    """Return a tuple used to de-duplicate comments."""
+    author = str(comment.get("author") or "").strip()
+    created_at = str(comment.get("createdAt") or "").strip()
+    text = str(comment.get("comment") or "").strip()
+    return author, created_at, text
+
+
+def _viewpoint_key(viewpoint: Dict[str, object]) -> Tuple[str, str, str, str]:
+    """Return a tuple representing a viewpoint for deduplication."""
+    return (
+        str(viewpoint.get("guid") or ""),
+        str(viewpoint.get("viewpoint") or ""),
+        str(viewpoint.get("snapshot") or ""),
+        str(viewpoint.get("index") or ""),
+    )
+
+
+def _parse_datetime(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+
+    candidate = value.strip()
+    if not candidate:
+        return None
+
+    candidate = candidate.replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(candidate)
+    except ValueError:
+        pass
+
+    # Fallbacks for common datetime strings that ``fromisoformat`` does not handle.
+    for fmt in (
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d",
+    ):
+        try:
+            return datetime.strptime(candidate.split(".")[0], fmt)
+        except ValueError:
+            continue
+
+    return None
+
+
+@dataclass
+class _AggregatedTopic:
+    data: TopicDict
+    comment_keys: Set[Tuple[str, str, str]]
+    viewpoint_keys: Set[Tuple[str, str, str, str]]
+    snapshot_timestamp: Optional[datetime]
+
+
+def _as_dict_list(values: object) -> List[Dict[str, object]]:
+    if not isinstance(values, list):
+        return []
+    return [deepcopy(item) for item in values if isinstance(item, dict)]
+
+
+def _initialise_topic(topic: TopicDict) -> _AggregatedTopic:
+    topic_copy: TopicDict = deepcopy(topic)
+
+    comments = _as_dict_list(topic_copy.get("comments"))
+    topic_copy["comments"] = comments
+
+    viewpoints = _as_dict_list(topic_copy.get("viewpoints"))
+    topic_copy["viewpoints"] = viewpoints
+
+    return _AggregatedTopic(
+        data=topic_copy,
+        comment_keys={_comment_key(comment) for comment in comments},
+        viewpoint_keys={_viewpoint_key(vp) for vp in viewpoints},
+        snapshot_timestamp=_parse_datetime(str(topic_copy.get("createdAt") or "")),
+    )
+
+
+def _merge_topic(base: _AggregatedTopic, incoming: TopicDict) -> None:
+    """Merge ``incoming`` topic data into ``base`` in-place."""
+    # Complete empty scalar fields with data from the incoming topic.
+    for key, value in incoming.items():
+        if key in {"comments", "viewpoints"}:
+            continue
+        if key not in base.data or _is_empty(base.data.get(key)):
+            base.data[key] = deepcopy(value)
+
+    # Merge comments, deduplicating by author/date/comment text.
+    for comment in _as_dict_list(incoming.get("comments")):
+        key = _comment_key(comment)
+        if key in base.comment_keys:
+            continue
+        base.comment_keys.add(key)
+        base.data.setdefault("comments", []).append(comment)
+
+    # Merge viewpoints. Keep all distinct combinations.
+    for viewpoint in _as_dict_list(incoming.get("viewpoints")):
+        key = _viewpoint_key(viewpoint)
+        if key in base.viewpoint_keys:
+            continue
+        base.viewpoint_keys.add(key)
+        base.data.setdefault("viewpoints", []).append(viewpoint)
+
+    # Update snapshot with the most recent topic creation date.
+    incoming_timestamp = _parse_datetime(str(incoming.get("createdAt") or ""))
+    incoming_snapshot = incoming.get("snapshot")
+    if incoming_snapshot:
+        if base.data.get("snapshot") is None:
+            base.data["snapshot"] = deepcopy(incoming_snapshot)
+            base.snapshot_timestamp = incoming_timestamp or base.snapshot_timestamp
+        else:
+            if base.snapshot_timestamp is None or (
+                incoming_timestamp is not None and incoming_timestamp > base.snapshot_timestamp
+            ):
+                base.data["snapshot"] = deepcopy(incoming_snapshot)
+                base.snapshot_timestamp = incoming_timestamp or base.snapshot_timestamp
+
+
+def merge_bcfs(paths: List[str], out_path: str) -> None:
+    """Merge multiple BCF archives into a single archive.
+
+    Parameters
+    ----------
+    paths:
+        Paths to the source BCF archives that should be merged.
+    out_path:
+        Destination path for the resulting merged BCF archive.
+    """
+
     if not paths:
-        raise ValueError("No BCF archives provided for merging.")
+        raise ValueError("At least one BCF path is required to perform a merge.")
 
-    merged_file = tempfile.NamedTemporaryFile(delete=False, suffix=".bcfzip")
-    merged_file.close()
+    from . import writer  # Imported lazily to avoid import cycles during type checking.
 
-    existing_names: set[str] = set()
+    merged_meta: ProjectMeta = {}
+    aggregated_topics: Dict[str, _AggregatedTopic] = {}
+    topic_order: List[str] = []
 
-    with zipfile.ZipFile(merged_file.name, "w", compression=zipfile.ZIP_DEFLATED) as output_zip:
-        for path in paths:
-            with zipfile.ZipFile(path, "r") as input_zip:
-                for info in input_zip.infolist():
-                    name = info.filename
-                    candidate = name
-                    counter = 1
-                    while candidate in existing_names:
-                        candidate = _increment_path(name, counter)
-                        counter += 1
+    for path_index, bcf_path in enumerate(paths):
+        project_meta, topics = reader.read_bcf(bcf_path)
 
-                    info_copy = zipfile.ZipInfo(filename=candidate, date_time=info.date_time)
-                    info_copy.comment = info.comment
-                    info_copy.compress_type = info.compress_type
-                    info_copy.create_system = info.create_system
-                    info_copy.create_version = info.create_version
-                    info_copy.extract_version = info.extract_version
-                    info_copy.external_attr = info.external_attr
-                    info_copy.flag_bits = info.flag_bits
-                    info_copy.internal_attr = info.internal_attr
-                    info_copy.extra = info.extra
-                    info_copy.volume = info.volume
+        # Complete project metadata with the first non-empty value encountered per key.
+        for key, value in project_meta.items():
+            if _is_empty(merged_meta.get(key)) and not _is_empty(value):
+                merged_meta[key] = str(value)
 
-                    data = b""
-                    if not info.is_dir():
-                        data = input_zip.read(info.filename)
+        for topic_index, topic in enumerate(topics):
+            if not isinstance(topic, dict):
+                continue
 
-                    output_zip.writestr(info_copy, data)
-                    existing_names.add(candidate)
+            guid = topic.get("guid")
+            if not guid:
+                guid = f"__missing_guid__{path_index}_{topic_index}"
 
-    return merged_file.name
+            if guid not in aggregated_topics:
+                aggregated_topics[guid] = _initialise_topic(topic)
+                topic_order.append(guid)
+            else:
+                _merge_topic(aggregated_topics[guid], topic)
+
+    merged_topics: List[TopicDict] = [aggregated_topics[guid].data for guid in topic_order]
+
+    writer.write_bcf(out_path, merged_meta, merged_topics)
